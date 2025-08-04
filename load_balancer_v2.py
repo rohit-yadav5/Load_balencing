@@ -1,10 +1,12 @@
 # load_balancer.py
+
 import asyncio
 import random
 import time
 import httpx
 from collections import Counter
 
+# List of backend server endpoints to balance traffic across
 SERVERS = [
     "http://127.0.0.1:5001/ping",
     "http://127.0.0.1:5002/ping",
@@ -13,25 +15,30 @@ SERVERS = [
     "http://127.0.0.1:5005/ping",
 ]
 
-# Latency estimates per server (initialize as None)
+# Stores latency estimates for each server (None at startup)
 latency_estimates = {url: None for url in SERVERS}
 
-# EMA smoothing factor
+# Smoothing factor for Exponential Moving Average (EMA)
 ALPHA = 0.3
 
 
 async def send_request(client: httpx.AsyncClient, url: str):
-    """Send a request and measure latency."""
+    """
+    Sends a request to the given server and measures how long it takes.
+    Updates the latency estimate for that server using EMA.
+    Returns the server URL, measured latency, and response data.
+    """
     start = time.time()
     try:
         resp = await client.get(url, timeout=10.0)
         elapsed = (time.time() - start) * 1000  # ms
         data = resp.json()
     except Exception as e:
-        elapsed = 9999  # treat failure as huge latency
+        # If the request fails, treat it as very slow
+        elapsed = 9999
         data = {"error": str(e)}
 
-    # Update moving average
+    # Update the latency estimate using EMA
     old = latency_estimates[url]
     if old is None:
         latency_estimates[url] = elapsed
@@ -42,16 +49,18 @@ async def send_request(client: httpx.AsyncClient, url: str):
 
 
 def pick_server():
-    """Pick a server based on 95/5 explore-exploit."""
-    # If all latencies are None (cold start), pick randomly
+    """
+    Chooses which server to send a request to:
+    - 95% of the time, pick the fastest known server ("exploit").
+    - 5% of the time, pick a different server to explore.
+    - If no latency data yet, pick randomly.
+    """
     known = {k: v for k, v in latency_estimates.items() if v is not None}
     if not known:
         return random.choice(SERVERS)
 
-    # Exploit: fastest server
     best_server = min(known, key=known.get)
 
-    # Explore vs exploit
     if random.random() < 0.95:
         return best_server
     else:
@@ -60,7 +69,13 @@ def pick_server():
 
 
 async def traffic_generator():
-    """Generate 100 requests per minute."""
+    """
+    Main loop that simulates client traffic:
+    - Every round, sends 100 requests to servers.
+    - Picks servers using the explore/exploit strategy.
+    - Prints a summary of latency and traffic distribution after each round.
+    - Waits 20 seconds before starting the next round.
+    """
     async with httpx.AsyncClient() as client:
         round_num = 1
         while True:
@@ -76,7 +91,7 @@ async def traffic_generator():
             # Count how many requests went to each server
             counts = Counter(chosen_servers)
 
-            # Print summary
+            # Print summary for this round
             print(f"\n=== Traffic Round {round_num} Summary ===")
             for url in SERVERS:
                 est = latency_estimates[url]
@@ -88,9 +103,10 @@ async def traffic_generator():
 
             round_num += 1
 
-            # wait until next minute
+            # Wait before next round
             await asyncio.sleep(20)
 
 
 if __name__ == "__main__":
+    # Start the traffic simulation when running this script
     asyncio.run(traffic_generator())
